@@ -1,6 +1,7 @@
 import pygame
 import time
 import random
+import psycopg2
 
 pygame.init()
 
@@ -22,25 +23,99 @@ SNAKE_BLOCK = 30
 screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
 pygame.display.set_caption("Snake Game")
 
-# Set font for score and level
+# Set font
 font_style = pygame.font.SysFont("bahnschrift", 50)
 score_font = pygame.font.SysFont("comicsansms", 40)
 
+# Database connection settings
+CONFIG: dict = {
+    "host": "localhost",
+    "database": "postgres",
+    "user": "postgres",
+    "password": "postgres"
+}
 
-# Function to display the current score and level
+conn = psycopg2.connect(**CONFIG)
+cursor = conn.cursor()
+
+# Display score and level func
 def message(msg, color, x, y):
     mesg = font_style.render(msg, True, color)
     screen.blit(mesg, [x, y])
 
+def get_user(username):
+    cursor.execute("SELECT id FROM public.user WHERE username = %s", (username,))
+    return cursor.fetchone()
 
+def create_user(username):
+    cursor.execute("INSERT INTO public.user (username) VALUES (%s) RETURNING id", (username,))
+    conn.commit()
+    return cursor.fetchone()[0]
+
+def get_user_score(user_id):
+    cursor.execute("SELECT level, score FROM public.user_score WHERE user_id = %s", (user_id,))
+    return cursor.fetchone()
+
+def save_score(user_id, level, score):
+    cursor.execute("""
+        INSERT INTO public.user_score (user_id, level, score)
+        VALUES (%s, %s, %s)
+        ON CONFLICT (user_id)
+        DO UPDATE SET level = EXCLUDED.level, score = EXCLUDED.score
+    """, (user_id, level, score))
+    conn.commit()
+
+# Function to handle the user input for the username
+def enter_username():
+    username = ""
+    input_active = True
+    while input_active:
+        screen.fill(BLUE)
+        message("Enter your username: ", WHITE, SCREEN_WIDTH // 4, SCREEN_HEIGHT // 3)
+        message(username, WHITE, SCREEN_WIDTH // 4, SCREEN_HEIGHT // 3 + 100)
+        pygame.display.update()
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit()
+                quit()
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_RETURN:
+                    input_active = False
+                elif event.key == pygame.K_BACKSPACE:
+                    username = username[:-1]
+                else:
+                    username += event.unicode
+
+    return username
+
+# Game Loop
 def gameLoop():
-    # Game settings
+    i = 0
     game_over = False
     game_close = False
 
+    # Get user information
+    username = enter_username()
+    user = get_user(username)
+    if user:
+        user_id = user[0]
+        user_score = get_user_score(user_id)
+        print(f"Welcome back, {username}! Your current level is {user_score[0]} and your score is {user_score[1]}")
+    else:
+        print("User not found. Creating a new user...")
+        user_id = create_user(username)
+        print(f"User created! Welcome, {username}!")
+
+    # Get user score and level
+    user_score = get_user_score(user_id)
+    score = user_score[1] if user_score else 0
+    level = user_score[0] if user_score else 1
+    speed = 15  # Initial speed of snake
+
     # Snake starting position
-    x1 = SCREEN_WIDTH / 2
-    y1 = SCREEN_HEIGHT / 2
+    x1 = ((SCREEN_WIDTH // SNAKE_BLOCK)//2) * SNAKE_BLOCK
+    y1 = ((SCREEN_HEIGHT // SNAKE_BLOCK)//2) * SNAKE_BLOCK
     x1_change = 0
     y1_change = 0
 
@@ -49,24 +124,17 @@ def gameLoop():
     Length_of_snake = 1
 
     # Food position
-    foodx = round(random.randrange(0, SCREEN_WIDTH - SNAKE_BLOCK) / 10.0) * 10.0
-    foody = round(random.randrange(0, SCREEN_HEIGHT - SNAKE_BLOCK) / 10.0) * 10.0
-
-    food_spawn_time = time.time()
-
-    # Initial score and level
-    score = 0
-    level = 1
-    speed = 15  # Initial speed of snake
+    foodx = round(random.randrange(0, SCREEN_WIDTH - SNAKE_BLOCK) // SNAKE_BLOCK) * SNAKE_BLOCK
+    foody = round(random.randrange(0, SCREEN_HEIGHT - SNAKE_BLOCK) // SNAKE_BLOCK) * SNAKE_BLOCK
+    food_is_drawn = True
 
     # Clock to control game speed
     clock = pygame.time.Clock()
 
-    # Game loop
     while not game_over:
-
         while game_close:
             screen.fill(BLUE)
+            save_score(user_id, level, score)
             message("You Lost! Press Q-Quit or C-Play Again", RED, SCREEN_WIDTH // 2.5, SCREEN_HEIGHT // 3)
             message("Score: " + str(score), GREEN, SCREEN_WIDTH / 2.2, SCREEN_HEIGHT / 2)
             message("Level: " + str(level), GREEN, SCREEN_WIDTH / 2.2, SCREEN_HEIGHT / 2 + 40)
@@ -86,17 +154,40 @@ def gameLoop():
                 game_over = True
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_LEFT:
+                    if len(snake_List) > 1:
+                        if x1-SNAKE_BLOCK == snake_List[-2][0]:
+                            break
+                    
                     x1_change = -SNAKE_BLOCK
                     y1_change = 0
                 elif event.key == pygame.K_RIGHT:
+                    if len(snake_List) > 1:
+                        if x1+SNAKE_BLOCK == snake_List[-2][0]:
+                            break
+
                     x1_change = SNAKE_BLOCK
                     y1_change = 0
                 elif event.key == pygame.K_UP:
+                    if len(snake_List) > 1:
+                        if y1-SNAKE_BLOCK == snake_List[-2][1]:
+                            break
+
                     y1_change = -SNAKE_BLOCK
                     x1_change = 0
                 elif event.key == pygame.K_DOWN:
+                    if len(snake_List) > 1:
+                        if y1+SNAKE_BLOCK == snake_List[-2][1]:
+                            break
+                    
                     y1_change = SNAKE_BLOCK
                     x1_change = 0
+
+                # Implement pause with 'P' key
+                elif event.key == pygame.K_p:
+                    save_score(user_id, level, score)
+                    print("Game saved! Press Q to quit.")
+                    pygame.display.update()
+                    game_over = True
 
         # Check for border collision
         if x1 >= SCREEN_WIDTH or x1 < 0 or y1 >= SCREEN_HEIGHT or y1 < 0:
@@ -107,14 +198,18 @@ def gameLoop():
         y1 += y1_change
         screen.fill(BLUE)
 
-        if time.time() - food_spawn_time > 5:
-            # Reset food to a new random position
-            foodx = round(random.randrange(0, SCREEN_WIDTH - SNAKE_BLOCK) / 10.0) * 10.0
-            foody = round(random.randrange(0, SCREEN_HEIGHT - SNAKE_BLOCK) / 10.0) * 10.0
-            food_spawn_time = time.time()  
+        if i > 50 and not food_is_drawn:
+            foodx = round(random.randrange(0, SCREEN_WIDTH - SNAKE_BLOCK) // SNAKE_BLOCK) * SNAKE_BLOCK
+            foody = round(random.randrange(0, SCREEN_HEIGHT - SNAKE_BLOCK) // SNAKE_BLOCK) * SNAKE_BLOCK
+            food_is_drawn = True
+            i = 0
+        
+        if i > 150 and food_is_drawn:
+            food_is_drawn = False
+            i = 0
 
-        # Draw food
-        pygame.draw.rect(screen, GREEN, [foodx, foody, SNAKE_BLOCK, SNAKE_BLOCK])
+        if food_is_drawn:
+            pygame.draw.rect(screen, GREEN, [foodx, foody, SNAKE_BLOCK, SNAKE_BLOCK])
 
         # Snake body logic
         snake_Head = []
@@ -134,30 +229,27 @@ def gameLoop():
             pygame.draw.rect(screen, WHITE, [block[0], block[1], SNAKE_BLOCK, SNAKE_BLOCK])
 
         # Display score and level
-        message("Score: " + str(score), GREEN, 0, 0)
-        message("Level: " + str(level), GREEN, SCREEN_WIDTH - 100, 0)
+        message("Score: " + str(score), GREEN, 20, 20)
+        message("Level: " + str(level), GREEN, SCREEN_WIDTH - 200, 20)
 
-        # Update the screen
         pygame.display.update()
 
         # Check if snake eats food
-        if abs(x1 - foodx) < SNAKE_BLOCK and abs(y1 - foody) < SNAKE_BLOCK:
-            foodx = round(random.randrange(0, SCREEN_WIDTH - SNAKE_BLOCK) / 10.0) * 10.0
-            foody = round(random.randrange(0, SCREEN_HEIGHT - SNAKE_BLOCK) / 10.0) * 10.0
+        if abs(x1 - foodx) < SNAKE_BLOCK//2 and abs(y1 - foody) < SNAKE_BLOCK//2:
+            food_is_drawn = False
+            i = 0
             Length_of_snake += 1
             score += 10
 
-            # Check if the snake reaches the next level
-            if score % 30 == 0:  # Level up after 3 foods (30 points)
+            if score % 30 == 0:  # Level up after 30 points
                 level += 1
-                speed += 5  # Increase speed when level up
+                speed += 5
 
         # Control the speed of the game
         clock.tick(speed)
+        i+=1
 
     pygame.quit()
     quit()
 
-
-# Start the game loop
 gameLoop()
